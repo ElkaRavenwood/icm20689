@@ -22,7 +22,6 @@ pub enum Error<CommE, PinE> {
     Comm(CommE),
     /// Pin setting error
     Pin(PinE),
-
     /// Unrecognized chip ID
     UnknownChipId,
     /// Sensor not responding
@@ -60,7 +59,6 @@ impl Builder {
 
 pub struct ICM20689<SI> {
     pub(crate) si: SI,
-
     pub(crate) gyro_scale: f32,
     pub(crate) accel_scale: f32,
 }
@@ -73,11 +71,12 @@ where
         Self {
             si: sensor_interface,
             gyro_scale: 0.0,
-            accel_scale: 0.0
+            accel_scale: 0.0,
         }
     }
 
     /// Read the sensor identifier and return true if they match a supported value
+    /// where supported values are for the ICM20602, ICM20608 and ICM20689 chips
     pub fn check_identity(
         &mut self,
         delay_source: &mut impl DelayMs<u8>,
@@ -103,6 +102,7 @@ where
     }
 
     /// Perform a soft reset on the sensor
+    /// This is required for proper sensor initialization and clock selection
     pub fn soft_reset(
         &mut self,
         delay_source: &mut impl DelayMs<u8>,
@@ -178,7 +178,7 @@ where
         }
 
         //TODO Configure the Digital Low Pass Filter (DLPF)
-        // self.si.register_write(Self::REG_CONFIG, DLPF_CFG_1)?;
+        // self.si.register_write(Self::REG_CONFIG, A_DLPF_CFG)?;
         // //set the sample frequency
         // self.si.register_write(Self::REG_SMPLRT_DIV, 0x01)?;
 
@@ -214,14 +214,17 @@ where
         self.si.register_write(REG_GYRO_CONFIG, (range as u8) << 2)
     }
 
+    /// Get raw accelerometer data
     pub fn get_raw_accel(&mut self) -> Result<[i16; 3], SI::InterfaceError> {
         self.si.read_vec3_i16(REG_ACCEL_START)
     }
 
+    /// Get raw gyroscope data
     pub fn get_raw_gyro(&mut self) -> Result<[i16; 3], SI::InterfaceError> {
         self.si.read_vec3_i16(REG_GYRO_START)
     }
 
+    /// Get scaled accelerometer data
     pub fn get_scaled_accel(&mut self) -> Result<[f32; 3], SI::InterfaceError> {
         let raw_accel = self.get_raw_accel()?;
         Ok([
@@ -231,6 +234,7 @@ where
         ])
     }
 
+    /// Get scaled gyroscope data
     pub fn get_scaled_gyro(&mut self) -> Result<[f32; 3], SI::InterfaceError> {
         let raw_gyro = self.get_raw_gyro()?;
         Ok([
@@ -240,34 +244,269 @@ where
         ])
     }
 
+    ///
+    /// TODO link range to enums at bottom
+    /// TODO check that this would be correct equation for the offset
+    /// TODO Figure out what on earth the registers actually return
+    ///
+    /// My interpretation of this is that:
+    /// upon reset, the self test registers contain the factory setting
+    /// We want to enable the test, let it overwrite the test value, then take the new one
+    /// and see if it is within the correct range
+    /// or we can check to see if they're equal and adjust the offset to be whatever they're not equal by
+    ///
+    /// Or maybe you need to:
+    /// read from self test
+    /// write to config register to enable self tests
+    /// read from normal register
+    /// write to config register to disable self tests
+    /// should match outputs when testing
+    /// if not, adjust offset
+    ///
+    /// calibrates accelerometer given an axis and the range ( 4, 8, 16, 32)
+    fn self_test_accel_generic(&mut self, axis: u8, range: u8) -> Result<(), SI::InterfaceError> {
+        // if x-axis
+        let mut self_test_register = REG_SELF_TEST_X_ACCEL;
+        let mut offset_register = REG_XA_OFFSET_L;
+        let mut enable_bit = 0x80; // bit 7 enable
+                               // if y-axis,
+        if axis == 1 {
+            self_test_register = REG_SELF_TEST_Y_ACCEL;
+            offset_register = REG_YA_OFFSET_L;
+            enable_bit = 0x40; // bit 6 enable
+        } else if axis == 2 {
+            // if z-axis
+            self_test_register = REG_SELF_TEST_Z_ACCEL;
+            offset_register = REG_ZA_OFFSET_L;
+            enable_bit = 0x20; // bit 5 enable
+        }
+
+        // read from self test
+        let mut self_test = self.si.register_read(self_test_register)?;
+        // enables test for specific axis
+        self.si.register_write(REG_ACCEL_CONFIG, enable_bit);
+        // get difference of self tests
+        self_test = self_test - self.si.register_read(self_test_register)?;
+        // if difference is greater than manufacturer guarantee, modify offset
+        if self_test > range {
+            self.si.register_write(offset_register, self_test_register);
+        }
+        // disables test for specific axis
+        self.si.register_write(REG_ACCEL_CONFIG, enable_bit);
+        // return
+        Ok(())
+    }
+
+    // /// TODO
+    // /// Self test for gyroscope
+    fn self_test_gyro_generic(&mut self, axis: u8, range: u8) -> Result<(), SI::InterfaceError> {
+        // if x-axis
+        let mut self_test_register = REG_SELF_TEST_X_GYRO;
+        let mut offset_register = REG_XG_OFFS_USRL;
+        let mut enable_bit = 0x80; // bit 7 enable
+        // if y-axis,
+        if axis == 1 {
+            self_test_register = REG_SELF_TEST_Y_GYRO;
+            offset_register = REG_YG_OFFS_USRL;
+            enable_bit = 0x40; // bit 6 enable
+        } else if axis == 2 {
+            // if z-axis
+            self_test_register = REG_SELF_TEST_Z_GYRO;
+            offset_register = REG_ZG_OFFS_USRL;
+            enable_bit = 0x20; // bit 5 enable
+        }
+
+        // read from self test
+        let mut self_test = self.si.register_read(self_test_register)?;
+        // enables test for specific axis
+        self.si.register_write(REG_GYRO_CONFIG, enable_bit);
+        // get difference of self tests
+        self_test = self_test - self.si.register_read(self_test_register)?;
+        // if difference is greater than manufacturer guarantee, modify offset
+        if self_test > range {
+            self.si.register_write(offset_register, self_test_register);
+        }
+        // disables test for specific axis
+        self.si.register_write(REG_GYRO_CONFIG, enable_bit);
+        // return
+        Ok(())
+    }
 }
 
 /// Common registers
+/// These are all possible registers
+
+/// The following are for: self testing the gyroscope
+/// The value in bits 7:0 for this register indicates the self-test output
+/// generated during manufacturing tests. This value is to be used to check
+/// against subsequent self-test outputs performed by the end user.
+const REG_SELF_TEST_X_GYRO: u8 = 0x00;
+const REG_SELF_TEST_Y_GYRO: u8 = 0x01;
+const REG_SELF_TEST_Z_GYRO: u8 = 0x02;
+
+/// The following are for: self testing the accelerometer
+/// The value in bits 7:0 for this register indicates the self-test output
+/// generated during manufacturing tests. This value is to be used to check
+/// against subsequent self-test outputs performed by the end user.
+const REG_SELF_TEST_X_ACCEL: u8 = 0x0D;
+const REG_SELF_TEST_Y_ACCEL: u8 = 0x0E;
+const REG_SELF_TEST_Z_ACCEL: u8 = 0x0F;
+
+/// The following are for: adjusting the gyroscope's offset
+/// Bits 15:8(H) and 7:0(L) of the 16-bit offset of X gyroscope (2’s complement). This
+/// register is used to remove DC bias from the sensor output. The value in
+/// this register is added to the gyroscope sensor value before going into
+/// the sensor register.
+const REG_XG_OFFS_USRH: u8 = 0x13;
+const REG_XG_OFFS_USRL: u8 = 0x14;
+const REG_YG_OFFS_USRH: u8 = 0x15;
+const REG_YG_OFFS_USRL: u8 = 0x16;
+const REG_ZG_OFFS_USRH: u8 = 0x17;
+const REG_ZG_OFFS_USRL: u8 = 0x18;
+
+/// The following is for: SAMPLE RATE DIVIDER
+/// Divides the internal sample rate (see register CONFIG) to generate the sample
+/// rate that controls sensor data output rate, FIFO sample rate. NOTE: This register
+/// is only effective when FCHOICE_B register bits are 2’b00, and (0 < DLPF_CFG < 7).
+/// This is the update rate of the sensor register:
+/// SAMPLE_RATE = INTERNAL_SAMPLE_RATE / (1 + SMPLRT_DIV)
+/// Where INTERNAL_SAMPLE_RATE = 1kHz
+const REG_SMPLRT_DIV: u8 = 0x19;
+
+/// The following are for:
+const REG_CONFIG: u8 = 0x1A; // has low pass filter
+
+/// The following is for: GYROSCOPE CONFIGURATION
+/// Bits 7:5 are for self-test XYZ respectively
+/// Bits 4:3 are for the gyro full scale select
+/// Bits 1:0 are for the DLPF bypass    
+const REG_GYRO_CONFIG: u8 = 0x1B;
+
 ///
+/// The following is for: ACCELEROMETER CONFIGURATION
+/// Bits 7:5 are for self-test XYZ respectively
+/// Bits 4:3 are for the accelerometer full scale select
+const REG_ACCEL_CONFIG: u8 = 0x1C;
+
+///
+/// The following is also for: ACCELEROMETER CONFIGURATION
+/// Bits 5:4 are for averaging filter settings in low power accelerometer mode
+/// Bits 3 are for the DLPF bypass
+/// Bits 2:0 are for accelerometer low pass filtering
+const REG_ACCEL_CONFIG_2: u8 = 0x1D;
+
+/// The following is for: LOW POWER MODE CONFIGURATION
+/// Bit 7 When set to ‘1’ low-power gyroscope mode is enabled. Default
+/// setting is ‘0’
+/// Bits 6:4 Averaging filter configuration for low-power gyroscope mode.
+/// Default setting is ‘000’
+const REG_LP_MODE_CFG: u8 = 0x1E;
+
+///
+/// The following is for: WAKE ON MOTION THRESHOLD
+/// Bits 7:0 This register holds the threshold value for the Wake on Motion Interrupt for
+/// accelerometer.
+const REG_ACCEL_WOM_THR: u8 = 0x1F;
+///
+/// The following are for: FIFO ENABLE
+const REG_FIFO_EN: u8 = 0x23;
+
+///
+/// The following is for: FSYNC interrupt status
+const REG_FSYNC_INT: u8 = 0x36;
+
+///
+/// The following is for: INT/DRDY PIN / BYPASS ENABLE CONFIGURATION
+const REG_INT_PIN_CFG: u8 = 0x37;
+
+///
+/// The following is for: Interrupt enable
+const REG_INT_ENABLE: u8 = 0x38;
+
+///
+/// The following is for: DMP Interrupt status
+const REG_DMP_INT_STATUS: u8 = 0x39;
+
+///
+/// The following is for: Interrupt status
+const REG_INT_STATUS: u8 = 0x3A;
+
+///
+/// The following are for: Accelerometer measurements
+/// These are read only registers
+const REG_ACCEL_XOUT_H: u8 = 0x3B; // contains the higher BITS
+const REG_ACCEL_XOUT_L: u8 = 0x3C;
+const REG_ACCEL_YOUT_H: u8 = 0x3D;
+const REG_ACCEL_YOUT_L: u8 = 0x3E;
+const REG_ACCEL_ZOUT_H: u8 = 0x3F;
+const REG_ACCEL_ZOUT_L: u8 = 0x40;
+
+///
+/// The following are for: temperature measurements
+/// These are read only registers
+const REG_TEMP_OUT_H: u8 = 0x41;
+const REG_TEMP_OUT_L: u8 = 0x42;
+
+///
+/// The following are for: gyroscope measurements
+/// These are read only registers
+const REG_GYRO_XOUT_H: u8 = 0x43;
+const REG_GYRO_XOUT_L: u8 = 0x44;
+const REG_GYRO_YOUT_H: u8 = 0x45;
+const REG_GYRO_YOUT_L: u8 = 0x46;
+const REG_GYRO_ZOUT_H: u8 = 0x47;
+const REG_GYRO_ZOUT_L: u8 = 0x48;
+
+///
+/// The following are for: SIGNAL PATH RESET
+const REG_SIGNAL_PATH_RESET: u8 = 0x68;
+
+///
+/// The following are for: ACCELEROMETER INTELLIGENCE CONTROL
+/// like the wake on motion
+/// Bit 7 enables or disables this feature
+const REG_ACCEL_INTEL_CTRL: u8 = 0x69;
+
+///
+/// The following is for: user control
 const REG_USER_CTRL: u8 = 0x6A;
+
+///
+/// The following are for: power management
 const REG_PWR_MGMT_1: u8 = 0x6B;
 const REG_PWR_MGMT_2: u8 = 0x6C;
 
-// const REG_CONFIG: u8 = 0x1A;
-const REG_GYRO_CONFIG: u8 = 0x1B;
-const REG_ACCEL_CONFIG: u8 = 0x1C;
+/// The following are for: FIFO count registers
+const REG_FIFO_COUNTH: u8 = 0x72;
+const REG_FIFO_COUNTL: u8 = 0x73;
 
-const REG_FIFO_EN: u8 = 0x23;
-const REG_INT_ENABLE: u8 = 0x38;
-// const REG_SMPLRT_DIV: u8 = 0x19;
+///
+/// The following is for: FIFO read/write
+/// (from FIFO buffer)
+const REG_FIFO_R_W: u8 = 0x74;
 
-const REG_ACCEL_XOUT_H: u8 = 0x3B;
-const REG_ACCEL_START: u8 = REG_ACCEL_XOUT_H;
-
-const REG_GYRO_XOUT_H: u8 = 0x43;
-const REG_GYRO_START: u8 = REG_GYRO_XOUT_H;
-
+///
+/// The following is for: verifying identity of device
 const REG_WHO_AM_I: u8 = 0x75;
+
+///
+/// The following are for: accelerometer offset
+const REG_XA_OFFSET_H: u8 = 0x77;
+const REG_XA_OFFSET_L: u8 = 0x78;
+const REG_YA_OFFSET_H: u8 = 0x7A;
+const REG_YA_OFFSET_L: u8 = 0x7B;
+const REG_ZA_OFFSET_H: u8 = 0x7D;
+const REG_ZA_OFFSET_L: u8 = 0x7E;
+
+/// The following are for:
+/// whatever the original author intended
+const REG_ACCEL_START: u8 = REG_ACCEL_XOUT_H;
+const REG_GYRO_START: u8 = REG_GYRO_XOUT_H;
 
 /// Device IDs for various supported devices
 const ICM20602_WAI: u8 = 0x12;
 const ICM20608_WAI: u8 = 0xAF;
-const ICM20689_WAI: u8 = 0x98;
+const ICM20689_WAI: u8 = 0x98; // this is ours
 
 #[repr(u8)]
 #[allow(non_camel_case_types)]
@@ -285,16 +524,16 @@ pub enum GyroRange {
 }
 
 //Gyro Full Scale Select: 00 = ±250dps
-// 01= ±500dps
-// 10 = ±1000dps
-// 11 = ±2000dps
+/// 01 = ±500dps
+/// 10 = ±1000dps
+/// 11 = ±2000dps
 
+/// Sets default gyroscope range to ±2000
 impl Default for GyroRange {
     fn default() -> Self {
         GyroRange::Range_2000dps
     }
 }
-
 
 impl GyroRange {
     /// convert degrees into radians
