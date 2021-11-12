@@ -199,6 +199,27 @@ where
         self.set_accel_range(AccelRange::default())?;
         self.set_gyro_range(GyroRange::default())?;
 
+        // VARIATION 1
+        // check if accelerometer works
+        if !self.self_test_accel()? {
+            panic!();
+        };
+        // check if gyroscope works
+        if !self.self_test_gyro()? {
+            panic!();
+        };
+
+        // VARIATION 2
+        //check if accelerometer works and calibrate
+        self.self_test_calibration(REG_ACCEL_CONFIG,REG_SELF_TEST_X_ACCEL, REG_XA_OFFSET_L, 0x80)?; // X-Axis
+        self.self_test_calibration(REG_ACCEL_CONFIG,REG_SELF_TEST_Y_ACCEL, REG_YA_OFFSET_L, 0x40)?; // Y-Axis
+        self.self_test_calibration(REG_ACCEL_CONFIG,REG_SELF_TEST_Z_ACCEL, REG_ZA_OFFSET_L, 0x20)?; // Z-Axis
+
+        //check if gyroscope works and calibrate
+        self.self_test_calibration(REG_GYRO_CONFIG,REG_SELF_TEST_X_GYRO, REG_XG_OFFS_USRL, 0x80)?; // X-Axis
+        self.self_test_calibration(REG_GYRO_CONFIG,REG_SELF_TEST_Z_GYRO, REG_YG_OFFS_USRL, 0x40)?; // Z-Axis
+        self.self_test_calibration(REG_GYRO_CONFIG,REG_SELF_TEST_Y_GYRO, REG_ZG_OFFS_USRL, 0x20)?; // Y-Axis
+
         Ok(())
     }
 
@@ -244,17 +265,97 @@ where
         ])
     }
 
-    ///
-    /// TODO link range to enums at bottom
-    /// TODO check that this would be correct equation for the offset
-    /// TODO Figure out what on earth the registers actually return
-    ///
-    /// My interpretation of this is that:
-    /// upon reset, the self test registers contain the factory setting
-    /// We want to enable the test, let it overwrite the test value, then take the new one
-    /// and see if it is within the correct range
-    /// or we can check to see if they're equal and adjust the offset to be whatever they're not equal by
-    ///
+    /// Self test interpretation 1:
+    /// Recall that self test is just to see if the sensors work
+    /// Assumes that the result of the self test is whether or not this passes/fails
+    /// Assumes the pass value is 1.
+    fn self_test_gyro(&mut self) -> Result<bool, SI::InterfaceError> {
+        // read from self test
+        // enables test for all axes
+        
+        self.si.register_write(REG_GYRO_CONFIG, 0xE0)?;
+        // TODO wait for some time
+        // thread::sleep(core::time::Duration::from_secs(5));
+        // disables test for specific axis
+        self.si.register_write(REG_GYRO_CONFIG, 0x0)?;
+        // check if this value is a pass
+        let val = self.si.register_read(REG_SELF_TEST_X_GYRO)? + self.si.register_read(REG_SELF_TEST_Y_GYRO)?+ self.si.register_read(REG_SELF_TEST_Z_GYRO)?;
+
+        // read and return value from self test register. If all pass (ie the accelerometer works), then this function returns true
+        // return
+        Ok(val == 3)
+    }
+
+    /// Self test interpretation 1:
+    /// Recall that self test is just to see if the sensors work
+    /// Assumes that the result of the self test is whether or not this passes/fails
+    /// Assumes the pass value is 1.
+    fn self_test_accel(&mut self) -> Result<bool, SI::InterfaceError> {
+        // read from self test
+        // enables test for all axes
+        
+        self.si.register_write(REG_ACCEL_CONFIG, 0xE0)?;
+        // TODO wait for some time
+        // thread::sleep(core::time::Duration::from_secs(5));
+        // disables test for specific axis
+        self.si.register_write(REG_ACCEL_CONFIG, 0x0)?;
+        // check if this value is a pass
+        let val = self.si.register_read(REG_SELF_TEST_X_ACCEL)? == 0x1 && 
+            self.si.register_read(REG_SELF_TEST_X_ACCEL)? == self.si.register_read(REG_SELF_TEST_Y_ACCEL)? && 
+            self.si.register_read(REG_SELF_TEST_X_ACCEL)? == self.si.register_read(REG_SELF_TEST_Z_ACCEL)?;
+
+        // read and return value from self test register. If all pass (ie the accelerometer works), then this function returns true
+        // return
+        Ok(val)
+    }
+
+    /// calibration based on self test
+    /// This assumes that the self test response is self-test response = Sensor output with self-test enabled – Sensor output with self-test disabled
+    /// Documentation says that it passes' if the value is less than the product specification state
+    /// The product specifications don't actually say anything (or give concrete values)
+    /// So we can probably just use the self-test response to adjust the offsets of the gyroscopes/accelerometers
+    /// Assumes that the self-test is overwritten from factory settings AFTER self test has been enabled, then disabled
+    /// 
+    /// calibrates accelerometer or gyroscope given the configuration, self test, offset registers and the bit in the config register to enable
+    fn self_test_calibration(&mut self, config: u8, self_test_register: u8, offset_register: u8, enable_bit: u8) -> Result<(), SI::InterfaceError> {
+        
+        // enables test for specific axis
+        self.si.register_write(config, enable_bit)?;
+        // TODO wait for a bit
+        // disables test for specific axis
+        self.si.register_write(config, enable_bit)?;
+        let self_test = self.si.register_read(self_test_register)?;
+        // write to offset differences in self test
+        self.si.register_write(offset_register, self_test)?;
+        // return
+        Ok(())
+    }
+
+    /// calibration based on self test
+    /// This assumes that the self test response is self-test response = Sensor output with self-test enabled – Sensor output with self-test disabled
+    /// Documentation says that it passes' if the value is less than the product specification state
+    /// The product specifications don't actually say anything (or give concrete values)
+    /// So we can probably just use the DIFFERENCE IN SELF-TEST-RESPONS FROM THE FACTORY_SELF_TEST  to adjust the offsets of the gyroscopes/accelerometers
+    /// Assumes that the self-test is overwritten from factory settings AFTER self test has been enabled, then disabled
+    /// 
+    /// calibrates accelerometer or gyroscope given the configuration, self test, offset registers and the bit in the config register to enable
+    fn self_test_calibration_2(&mut self, config: u8, self_test_register: u8, offset_register: u8, enable_bit: u8) -> Result<(), SI::InterfaceError> {
+        
+        // read from self test
+        let factory_self_test = self.si.register_read(self_test_register)?;
+        // enables test for specific axis
+        self.si.register_write(config, enable_bit)?;
+        // TODO wait for a bit
+        // disables test for specific axis
+        self.si.register_write(config, enable_bit)?;
+        // get difference of self tests
+        let self_test = factory_self_test - self.si.register_read(self_test_register)?;
+        // write to offset differences in self test
+        self.si.register_write(offset_register, self_test)?;
+        // return
+        Ok(())
+    }
+
     /// Or maybe you need to:
     /// read from self test
     /// write to config register to enable self tests
@@ -263,74 +364,10 @@ where
     /// should match outputs when testing
     /// if not, adjust offset
     ///
-    /// calibrates accelerometer given an axis and the range ( 4, 8, 16, 32)
-    fn self_test_accel_generic(&mut self, axis: u8, range: u8) -> Result<(), SI::InterfaceError> {
-        // if x-axis
-        let mut self_test_register = REG_SELF_TEST_X_ACCEL;
-        let mut offset_register = REG_XA_OFFSET_L;
-        let mut enable_bit = 0x80; // bit 7 enable
-                               // if y-axis,
-        if axis == 1 {
-            self_test_register = REG_SELF_TEST_Y_ACCEL;
-            offset_register = REG_YA_OFFSET_L;
-            enable_bit = 0x40; // bit 6 enable
-        } else if axis == 2 {
-            // if z-axis
-            self_test_register = REG_SELF_TEST_Z_ACCEL;
-            offset_register = REG_ZA_OFFSET_L;
-            enable_bit = 0x20; // bit 5 enable
-        }
-
-        // read from self test
-        let mut self_test = self.si.register_read(self_test_register)?;
-        // enables test for specific axis
-        self.si.register_write(REG_ACCEL_CONFIG, enable_bit);
-        // get difference of self tests
-        self_test = self_test - self.si.register_read(self_test_register)?;
-        // if difference is greater than manufacturer guarantee, modify offset
-        if self_test > range {
-            self.si.register_write(offset_register, self_test_register);
-        }
-        // disables test for specific axis
-        self.si.register_write(REG_ACCEL_CONFIG, enable_bit);
-        // return
+    fn calibration(&mut self, config: u8, self_test_register: u8, offset_register: u8, enable_bit: u8) -> Result<(), SI::InterfaceError> {
         Ok(())
     }
 
-    // /// TODO
-    // /// Self test for gyroscope
-    fn self_test_gyro_generic(&mut self, axis: u8, range: u8) -> Result<(), SI::InterfaceError> {
-        // if x-axis
-        let mut self_test_register = REG_SELF_TEST_X_GYRO;
-        let mut offset_register = REG_XG_OFFS_USRL;
-        let mut enable_bit = 0x80; // bit 7 enable
-        // if y-axis,
-        if axis == 1 {
-            self_test_register = REG_SELF_TEST_Y_GYRO;
-            offset_register = REG_YG_OFFS_USRL;
-            enable_bit = 0x40; // bit 6 enable
-        } else if axis == 2 {
-            // if z-axis
-            self_test_register = REG_SELF_TEST_Z_GYRO;
-            offset_register = REG_ZG_OFFS_USRL;
-            enable_bit = 0x20; // bit 5 enable
-        }
-
-        // read from self test
-        let mut self_test = self.si.register_read(self_test_register)?;
-        // enables test for specific axis
-        self.si.register_write(REG_GYRO_CONFIG, enable_bit);
-        // get difference of self tests
-        self_test = self_test - self.si.register_read(self_test_register)?;
-        // if difference is greater than manufacturer guarantee, modify offset
-        if self_test > range {
-            self.si.register_write(offset_register, self_test_register);
-        }
-        // disables test for specific axis
-        self.si.register_write(REG_GYRO_CONFIG, enable_bit);
-        // return
-        Ok(())
-    }
 }
 
 /// Common registers
@@ -357,11 +394,11 @@ const REG_SELF_TEST_Z_ACCEL: u8 = 0x0F;
 /// register is used to remove DC bias from the sensor output. The value in
 /// this register is added to the gyroscope sensor value before going into
 /// the sensor register.
-const REG_XG_OFFS_USRH: u8 = 0x13;
+// const REG_XG_OFFS_USRH: u8 = 0x13;
 const REG_XG_OFFS_USRL: u8 = 0x14;
-const REG_YG_OFFS_USRH: u8 = 0x15;
+// const REG_YG_OFFS_USRH: u8 = 0x15;
 const REG_YG_OFFS_USRL: u8 = 0x16;
-const REG_ZG_OFFS_USRH: u8 = 0x17;
+// const REG_ZG_OFFS_USRH: u8 = 0x17;
 const REG_ZG_OFFS_USRL: u8 = 0x18;
 
 /// The following is for: SAMPLE RATE DIVIDER
@@ -371,10 +408,10 @@ const REG_ZG_OFFS_USRL: u8 = 0x18;
 /// This is the update rate of the sensor register:
 /// SAMPLE_RATE = INTERNAL_SAMPLE_RATE / (1 + SMPLRT_DIV)
 /// Where INTERNAL_SAMPLE_RATE = 1kHz
-const REG_SMPLRT_DIV: u8 = 0x19;
+// const REG_SMPLRT_DIV: u8 = 0x19;
 
 /// The following are for:
-const REG_CONFIG: u8 = 0x1A; // has low pass filter
+// const REG_CONFIG: u8 = 0x1A; // has low pass filter
 
 /// The following is for: GYROSCOPE CONFIGURATION
 /// Bits 7:5 are for self-test XYZ respectively
@@ -393,31 +430,32 @@ const REG_ACCEL_CONFIG: u8 = 0x1C;
 /// Bits 5:4 are for averaging filter settings in low power accelerometer mode
 /// Bits 3 are for the DLPF bypass
 /// Bits 2:0 are for accelerometer low pass filtering
-const REG_ACCEL_CONFIG_2: u8 = 0x1D;
+// const REG_ACCEL_CONFIG_2: u8 = 0x1D;
 
 /// The following is for: LOW POWER MODE CONFIGURATION
 /// Bit 7 When set to ‘1’ low-power gyroscope mode is enabled. Default
 /// setting is ‘0’
 /// Bits 6:4 Averaging filter configuration for low-power gyroscope mode.
 /// Default setting is ‘000’
-const REG_LP_MODE_CFG: u8 = 0x1E;
+// const REG_LP_MODE_CFG: u8 = 0x1E;
 
 ///
 /// The following is for: WAKE ON MOTION THRESHOLD
 /// Bits 7:0 This register holds the threshold value for the Wake on Motion Interrupt for
 /// accelerometer.
-const REG_ACCEL_WOM_THR: u8 = 0x1F;
+// const REG_ACCEL_WOM_THR: u8 = 0x1F;
+
 ///
 /// The following are for: FIFO ENABLE
 const REG_FIFO_EN: u8 = 0x23;
 
 ///
 /// The following is for: FSYNC interrupt status
-const REG_FSYNC_INT: u8 = 0x36;
+// const REG_FSYNC_INT: u8 = 0x36;
 
 ///
 /// The following is for: INT/DRDY PIN / BYPASS ENABLE CONFIGURATION
-const REG_INT_PIN_CFG: u8 = 0x37;
+// const REG_INT_PIN_CFG: u8 = 0x37;
 
 ///
 /// The following is for: Interrupt enable
@@ -425,47 +463,47 @@ const REG_INT_ENABLE: u8 = 0x38;
 
 ///
 /// The following is for: DMP Interrupt status
-const REG_DMP_INT_STATUS: u8 = 0x39;
+// const REG_DMP_INT_STATUS: u8 = 0x39;
 
 ///
 /// The following is for: Interrupt status
-const REG_INT_STATUS: u8 = 0x3A;
+// const REG_INT_STATUS: u8 = 0x3A;
 
 ///
 /// The following are for: Accelerometer measurements
 /// These are read only registers
 const REG_ACCEL_XOUT_H: u8 = 0x3B; // contains the higher BITS
-const REG_ACCEL_XOUT_L: u8 = 0x3C;
-const REG_ACCEL_YOUT_H: u8 = 0x3D;
-const REG_ACCEL_YOUT_L: u8 = 0x3E;
-const REG_ACCEL_ZOUT_H: u8 = 0x3F;
-const REG_ACCEL_ZOUT_L: u8 = 0x40;
+// const REG_ACCEL_XOUT_L: u8 = 0x3C;
+// const REG_ACCEL_YOUT_H: u8 = 0x3D;
+// const REG_ACCEL_YOUT_L: u8 = 0x3E;
+// const REG_ACCEL_ZOUT_H: u8 = 0x3F;
+// const REG_ACCEL_ZOUT_L: u8 = 0x40;
 
 ///
 /// The following are for: temperature measurements
 /// These are read only registers
-const REG_TEMP_OUT_H: u8 = 0x41;
-const REG_TEMP_OUT_L: u8 = 0x42;
+// const REG_TEMP_OUT_H: u8 = 0x41;
+// const REG_TEMP_OUT_L: u8 = 0x42;
 
 ///
 /// The following are for: gyroscope measurements
 /// These are read only registers
 const REG_GYRO_XOUT_H: u8 = 0x43;
-const REG_GYRO_XOUT_L: u8 = 0x44;
-const REG_GYRO_YOUT_H: u8 = 0x45;
-const REG_GYRO_YOUT_L: u8 = 0x46;
-const REG_GYRO_ZOUT_H: u8 = 0x47;
-const REG_GYRO_ZOUT_L: u8 = 0x48;
+// const REG_GYRO_XOUT_L: u8 = 0x44;
+// const REG_GYRO_YOUT_H: u8 = 0x45;
+// const REG_GYRO_YOUT_L: u8 = 0x46;
+// const REG_GYRO_ZOUT_H: u8 = 0x47;
+// const REG_GYRO_ZOUT_L: u8 = 0x48;
 
 ///
 /// The following are for: SIGNAL PATH RESET
-const REG_SIGNAL_PATH_RESET: u8 = 0x68;
+// const REG_SIGNAL_PATH_RESET: u8 = 0x68;
 
 ///
 /// The following are for: ACCELEROMETER INTELLIGENCE CONTROL
 /// like the wake on motion
 /// Bit 7 enables or disables this feature
-const REG_ACCEL_INTEL_CTRL: u8 = 0x69;
+// const REG_ACCEL_INTEL_CTRL: u8 = 0x69;
 
 ///
 /// The following is for: user control
@@ -477,13 +515,13 @@ const REG_PWR_MGMT_1: u8 = 0x6B;
 const REG_PWR_MGMT_2: u8 = 0x6C;
 
 /// The following are for: FIFO count registers
-const REG_FIFO_COUNTH: u8 = 0x72;
-const REG_FIFO_COUNTL: u8 = 0x73;
+// const REG_FIFO_COUNTH: u8 = 0x72;
+// const REG_FIFO_COUNTL: u8 = 0x73;
 
 ///
 /// The following is for: FIFO read/write
 /// (from FIFO buffer)
-const REG_FIFO_R_W: u8 = 0x74;
+// const REG_FIFO_R_W: u8 = 0x74;
 
 ///
 /// The following is for: verifying identity of device
@@ -491,11 +529,11 @@ const REG_WHO_AM_I: u8 = 0x75;
 
 ///
 /// The following are for: accelerometer offset
-const REG_XA_OFFSET_H: u8 = 0x77;
+// const REG_XA_OFFSET_H: u8 = 0x77;
 const REG_XA_OFFSET_L: u8 = 0x78;
-const REG_YA_OFFSET_H: u8 = 0x7A;
+// const REG_YA_OFFSET_H: u8 = 0x7A;
 const REG_YA_OFFSET_L: u8 = 0x7B;
-const REG_ZA_OFFSET_H: u8 = 0x7D;
+// const REG_ZA_OFFSET_H: u8 = 0x7D;
 const REG_ZA_OFFSET_L: u8 = 0x7E;
 
 /// The following are for:
