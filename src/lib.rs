@@ -8,6 +8,7 @@ LICENSE: BSD3 (see LICENSE file)
 use embedded_hal as hal;
 use hal::blocking::delay::DelayMs;
 use hal::digital::v2::OutputPin;
+use core::convert::TryInto;
 
 #[cfg(feature = "rttdebug")]
 use panic_rtt_core::rprintln;
@@ -220,6 +221,40 @@ where
         self.self_test_calibration(REG_GYRO_CONFIG,REG_SELF_TEST_Z_GYRO, REG_YG_OFFS_USRL, 0x40)?; // Z-Axis
         self.self_test_calibration(REG_GYRO_CONFIG,REG_SELF_TEST_Y_GYRO, REG_ZG_OFFS_USRL, 0x20)?; // Y-Axis
 
+        // VARIATION 3
+        //check if accelerometer works and calibrate
+        self.self_test_calibration_2(REG_ACCEL_CONFIG,REG_SELF_TEST_X_ACCEL, REG_XA_OFFSET_L, 0x80)?; // X-Axis
+        self.self_test_calibration_2(REG_ACCEL_CONFIG,REG_SELF_TEST_Y_ACCEL, REG_YA_OFFSET_L, 0x40)?; // Y-Axis
+        self.self_test_calibration_2(REG_ACCEL_CONFIG,REG_SELF_TEST_Z_ACCEL, REG_ZA_OFFSET_L, 0x20)?; // Z-Axis
+
+        //check if gyroscope works and calibrate
+        self.self_test_calibration_2(REG_GYRO_CONFIG,REG_SELF_TEST_X_GYRO, REG_XG_OFFS_USRL, 0x80)?; // X-Axis
+        self.self_test_calibration_2(REG_GYRO_CONFIG,REG_SELF_TEST_Z_GYRO, REG_YG_OFFS_USRL, 0x40)?; // Z-Axis
+        self.self_test_calibration_2(REG_GYRO_CONFIG,REG_SELF_TEST_Y_GYRO, REG_ZG_OFFS_USRL, 0x20)?; // Y-Axis
+
+
+        // VARIATION 4: CALIBRATION
+        // NOTE NOT HANDLING ERROR
+        // Does it by 100 elements
+        // Calibrate Gyro
+        // This would be for holding it steady
+        self.calibrate_by_n_elements(REG_GYRO_XOUT_H, REG_XG_OFFS_USRH, 100)?;
+        self.calibrate_by_n_elements(REG_GYRO_XOUT_L, REG_XG_OFFS_USRL, 100)?;
+        self.calibrate_by_n_elements(REG_GYRO_YOUT_H, REG_YG_OFFS_USRH, 100)?;
+        self.calibrate_by_n_elements(REG_GYRO_YOUT_L, REG_YG_OFFS_USRL, 100)?;
+        self.calibrate_by_n_elements(REG_GYRO_ZOUT_H, REG_ZG_OFFS_USRH, 100)?;
+        self.calibrate_by_n_elements(REG_GYRO_ZOUT_L, REG_ZG_OFFS_USRL, 100)?;
+
+        // Calibrate Accel
+        // Ideally we want to do this while holding it against, toward and perpendicular to gravity for each of these
+        // But we can't flip a robot upside down
+        self.calibrate_by_n_elements(REG_ACCEL_XOUT_H, REG_XA_OFFSET_H, 100)?;
+        self.calibrate_by_n_elements(REG_ACCEL_XOUT_L, REG_XA_OFFSET_L, 100)?;
+        self.calibrate_by_n_elements(REG_ACCEL_YOUT_H, REG_YA_OFFSET_H, 100)?;
+        self.calibrate_by_n_elements(REG_ACCEL_YOUT_L, REG_YA_OFFSET_L, 100)?;
+        self.calibrate_by_n_elements(REG_ACCEL_ZOUT_H, REG_ZA_OFFSET_H, 100)?;
+        self.calibrate_by_n_elements(REG_ACCEL_ZOUT_L, REG_ZA_OFFSET_L, 100)?;
+
         Ok(())
     }
 
@@ -356,15 +391,20 @@ where
         Ok(())
     }
 
-    /// Or maybe you need to:
-    /// read from self test
-    /// write to config register to enable self tests
-    /// read from normal register
-    /// write to config register to disable self tests
-    /// should match outputs when testing
-    /// if not, adjust offset
-    ///
-    fn calibration(&mut self, config: u8, self_test_register: u8, offset_register: u8, enable_bit: u8) -> Result<(), SI::InterfaceError> {
+    /// calibrate given read register, offset registers and the number of samples to take
+    fn calibrate_by_n_elements (&mut self, read_reg: u8, offset_reg: u8, n: i32) -> Result<(), SI::InterfaceError>  {
+        let mut avg:i32 = 0;
+        let mut i = 0;
+        while i < n {
+            // TODO figure how to check if reads were successful
+            avg = avg + i32:: from(self.si.register_read(read_reg)?);
+            i = i + 1;
+        }
+        // get average
+        avg = avg / n;
+        // adjust offset
+        self.si.register_write(offset_reg, avg.try_into().unwrap())?;
+        // return
         Ok(())
     }
 
@@ -394,11 +434,11 @@ const REG_SELF_TEST_Z_ACCEL: u8 = 0x0F;
 /// register is used to remove DC bias from the sensor output. The value in
 /// this register is added to the gyroscope sensor value before going into
 /// the sensor register.
-// const REG_XG_OFFS_USRH: u8 = 0x13;
+const REG_XG_OFFS_USRH: u8 = 0x13;
 const REG_XG_OFFS_USRL: u8 = 0x14;
-// const REG_YG_OFFS_USRH: u8 = 0x15;
+const REG_YG_OFFS_USRH: u8 = 0x15;
 const REG_YG_OFFS_USRL: u8 = 0x16;
-// const REG_ZG_OFFS_USRH: u8 = 0x17;
+const REG_ZG_OFFS_USRH: u8 = 0x17;
 const REG_ZG_OFFS_USRL: u8 = 0x18;
 
 /// The following is for: SAMPLE RATE DIVIDER
@@ -473,11 +513,11 @@ const REG_INT_ENABLE: u8 = 0x38;
 /// The following are for: Accelerometer measurements
 /// These are read only registers
 const REG_ACCEL_XOUT_H: u8 = 0x3B; // contains the higher BITS
-// const REG_ACCEL_XOUT_L: u8 = 0x3C;
-// const REG_ACCEL_YOUT_H: u8 = 0x3D;
-// const REG_ACCEL_YOUT_L: u8 = 0x3E;
-// const REG_ACCEL_ZOUT_H: u8 = 0x3F;
-// const REG_ACCEL_ZOUT_L: u8 = 0x40;
+const REG_ACCEL_XOUT_L: u8 = 0x3C;
+const REG_ACCEL_YOUT_H: u8 = 0x3D;
+const REG_ACCEL_YOUT_L: u8 = 0x3E;
+const REG_ACCEL_ZOUT_H: u8 = 0x3F;
+const REG_ACCEL_ZOUT_L: u8 = 0x40;
 
 ///
 /// The following are for: temperature measurements
@@ -489,11 +529,11 @@ const REG_ACCEL_XOUT_H: u8 = 0x3B; // contains the higher BITS
 /// The following are for: gyroscope measurements
 /// These are read only registers
 const REG_GYRO_XOUT_H: u8 = 0x43;
-// const REG_GYRO_XOUT_L: u8 = 0x44;
-// const REG_GYRO_YOUT_H: u8 = 0x45;
-// const REG_GYRO_YOUT_L: u8 = 0x46;
-// const REG_GYRO_ZOUT_H: u8 = 0x47;
-// const REG_GYRO_ZOUT_L: u8 = 0x48;
+const REG_GYRO_XOUT_L: u8 = 0x44;
+const REG_GYRO_YOUT_H: u8 = 0x45;
+const REG_GYRO_YOUT_L: u8 = 0x46;
+const REG_GYRO_ZOUT_H: u8 = 0x47;
+const REG_GYRO_ZOUT_L: u8 = 0x48;
 
 ///
 /// The following are for: SIGNAL PATH RESET
@@ -529,11 +569,11 @@ const REG_WHO_AM_I: u8 = 0x75;
 
 ///
 /// The following are for: accelerometer offset
-// const REG_XA_OFFSET_H: u8 = 0x77;
+const REG_XA_OFFSET_H: u8 = 0x77;
 const REG_XA_OFFSET_L: u8 = 0x78;
-// const REG_YA_OFFSET_H: u8 = 0x7A;
+const REG_YA_OFFSET_H: u8 = 0x7A;
 const REG_YA_OFFSET_L: u8 = 0x7B;
-// const REG_ZA_OFFSET_H: u8 = 0x7D;
+const REG_ZA_OFFSET_H: u8 = 0x7D;
 const REG_ZA_OFFSET_L: u8 = 0x7E;
 
 /// The following are for:
