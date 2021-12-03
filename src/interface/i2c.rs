@@ -33,11 +33,15 @@ where
     type InterfaceError = Error<CommE, ()>;
 
     fn register_read(&mut self, _reg: u8) -> Result<u8, Self::InterfaceError> {
-        unimplemented!()
+        let mut buf = [0u8; 1];
+        self._i2c_port.read(self._address, &mut buf[..]).map_err(|err| Error::Comm(err))?;
+        Ok(buf[0])
     }
 
     fn register_write(&mut self, _reg: u8, _val: u8) -> Result<(), Self::InterfaceError> {
-        unimplemented!()
+        let mut buf = [_val; 1];
+        self._i2c_port.write( _reg, &mut buf[..]).map_err(|err| Error::Comm(err))?;
+        Ok(())
     }
 
     fn read_vec3_i16(&mut self, _reg: u8) -> Result<[i16; 3], Self::InterfaceError> {
